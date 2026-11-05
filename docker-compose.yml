@@ -1,0 +1,18 @@
+services:
+  vmm:
+    build: .
+    devices: ["/dev/kvm"]       # host KVM, the VMs themselves run inside this container
+    init: true                  # PID 1 reaps daemonized qemu processes
+    restart: unless-stopped
+    stop_grace_period: 60s      # app powers guests off cleanly on SIGTERM
+    environment:
+      LIMIT_CPUS: 4             # quota: total vCPUs of all VMs
+      LIMIT_MEMORY: 4096        # quota: total RAM of all VMs, MiB
+    ports:
+      - "127.0.0.1:8080:8080"            # API + web UI (no auth, so localhost only)
+      - "127.0.0.1:2201-2220:2201-2220"  # SSH of VMs, one port per VM
+    volumes:
+      - vmdata:/data            # state.json, images, VM disks: survive container restarts
+
+volumes:
+  vmdata:

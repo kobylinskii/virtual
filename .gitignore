@@ -1,0 +1,10 @@
+*.img
+*.qcow2
+id_vm
+id_vm.pub
+seed/
+serial.log
+monitor.sock
+vm.pid
+*.part
+__pycache__/

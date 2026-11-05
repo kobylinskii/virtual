@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VM manager</title>
+<style>
+  :root { --bg:#fff; --fg:#1a1a1a; --muted:#666; --line:#ddd; --accent:#2563eb; --bad:#dc2626; --good:#16a34a; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111; --fg:#eee; --muted:#999; --line:#333; } }
+  body { font: 14px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--fg); max-width:960px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:16px; margin:24px 0 8px; }
+  table { width:100%; border-collapse:collapse; } th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:500; } code { font-size:12px; }
+  form { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px; align-items:end; }
+  label { display:flex; flex-direction:column; gap:2px; color:var(--muted); font-size:12px; }
+  input, select, textarea { font:inherit; padding:5px 6px; border:1px solid var(--line); border-radius:4px; background:var(--bg); color:var(--fg); }
+  textarea { grid-column:1/-1; min-height:60px; font-family:monospace; font-size:12px; }
+  button { font:inherit; padding:5px 10px; border:1px solid var(--line); border-radius:4px; background:var(--bg); color:var(--fg); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .running { color:var(--good); } .stopped { color:var(--muted); }
+  #msg { min-height:20px; color:var(--bad); white-space:pre-wrap; }
+  .wrap { overflow-x:auto; }
+</style>
+</head>
+<body>
+<h1>VM manager</h1>
+<div id="quota" style="color:var(--muted)"></div>
+<div id="msg"></div>
+
+<h2>Виртуальные машины</h2>
+<div class="wrap"><table>
+  <thead><tr><th>Имя</th><th>Образ</th><th>CPU</th><th>RAM, МиБ</th><th>Состояние</th><th>SSH</th><th></th></tr></thead>
+  <tbody id="vms"></tbody>
+</table></div>
+
+<h2>Создать ВМ</h2>
+<form id="create">
+  <label>Имя<input name="name" required pattern="[a-z0-9-]+"></label>
+  <label>Hostname<input name="hostname" placeholder="= имя"></label>
+  <label>Образ<select name="image" id="image-select"></select></label>
+  <label>CPU<input name="cpus" type="number" min="1" value="1"></label>
+  <label>RAM, МиБ<input name="memory" type="number" min="256" step="256" value="1024"></label>
+  <label>Пароль пользователя ubuntu<input name="password" type="password" autocomplete="new-password"></label>
+  <textarea name="ssh_keys" placeholder="SSH-ключи, по одному на строку: вывод cat ~/.ssh/id_ed25519.pub"></textarea>
+  <textarea name="user_data" placeholder="user_data (необязательно): #cloud-config ... или #!/bin/sh ..."></textarea>
+  <button class="primary">Создать</button>
+</form>
+
+<h2>Образы</h2>
+<div class="wrap"><table>
+  <thead><tr><th>Имя</th><th>Путь</th><th>Описание</th><th></th></tr></thead>
+  <tbody id="images"></tbody>
+</table></div>
+
+<h2>Добавить образ</h2>
+<form id="add-image">
+  <label>Имя<input name="name" required pattern="[a-z0-9.\-]+"></label>
+  <label>Путь в контейнере<input name="path" placeholder="/data/images/x.img"></label>
+  <label>или URL для скачивания<input name="url" placeholder="https://..."></label>
+  <label>Описание<input name="description"></label>
+  <button class="primary">Добавить</button>
+</form>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: {'Content-Type': 'application/json'}, body: body && JSON.stringify(body) });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || r.status);
+  return data;
+}
+
+async function act(fn) {
+  $('#msg').textContent = '';
+  try { await fn(); } catch (e) { $('#msg').textContent = e.message; }
+  refresh();
+}
+
+async function refresh() {
+  const [vms, images, q] = await Promise.all([api('GET', '/vms'), api('GET', '/images'), api('GET', '/quota')]);
+  $('#quota').textContent = `Квота: CPU ${q.used_cpus}/${q.limit_cpus}, RAM ${q.used_memory}/${q.limit_memory} МиБ`;
+  $('#vms').innerHTML = vms.map(v => `<tr>
+    <td>${esc(v.name)}</td><td>${esc(v.image)}</td><td>${v.cpus}</td><td>${v.memory}</td>
+    <td class="${v.state}">${v.state}</td><td><code>${esc(v.ssh)}</code></td>
+    <td><button data-vm="${esc(v.name)}" data-do="${v.state === 'running' ? 'stop' : 'start'}">${v.state === 'running' ? 'Стоп' : 'Старт'}</button>
+        <button data-vm="${esc(v.name)}" data-do="delete">Удалить</button></td></tr>`).join('')
+    || '<tr><td colspan="7" style="color:var(--muted)">пока нет</td></tr>';
+  $('#images').innerHTML = images.map(i => `<tr><td>${esc(i.name)}</td><td><code>${esc(i.path)}</code></td>
+    <td>${esc(i.description)}</td><td><button data-image="${esc(i.name)}">Удалить</button></td></tr>`).join('')
+    || '<tr><td colspan="4" style="color:var(--muted)">нет образов (при первом запуске образ по умолчанию скачивается ~1 мин)</td></tr>';
+  const sel = $('#image-select'), cur = sel.value;
+  sel.innerHTML = images.map(i => `<option>${esc(i.name)}</option>`).join('');
+  if (cur) sel.value = cur;
+}
+
+document.addEventListener('click', e => {
+  const b = e.target.closest('button[data-vm], button[data-image]');
+  if (!b) return;
+  if (b.dataset.image) return act(() => api('DELETE', `/images/${b.dataset.image}`));
+  if (b.dataset.do === 'delete' && !confirm(`Удалить ВМ ${b.dataset.vm} вместе с диском?`)) return;
+  b.disabled = true;
+  act(() => b.dataset.do === 'delete' ? api('DELETE', `/vms/${b.dataset.vm}`) : api('POST', `/vms/${b.dataset.vm}/${b.dataset.do}`));
+});
+
+$('#create').addEventListener('submit', e => {
+  e.preventDefault();
+  const f = Object.fromEntries(new FormData(e.target));
+  const body = { name: f.name, image: f.image, cpus: +f.cpus, memory: +f.memory,
+                 ssh_keys: f.ssh_keys.split('\n').map(s => s.trim()).filter(Boolean) };
+  if (!body.ssh_keys.length && !f.password) { $('#msg').textContent = 'Нужен SSH-ключ или пароль, иначе в ВМ не войти'; return; }
+  if (f.password) body.password = f.password;
+  if (f.hostname) body.hostname = f.hostname;
+  if (f.user_data.trim()) body.user_data = f.user_data;
+  act(async () => { await api('POST', '/vms', body); e.target.reset(); });
+});
+
+$('#add-image').addEventListener('submit', e => {
+  e.preventDefault();
+  const body = Object.fromEntries([...new FormData(e.target)].filter(([, v]) => v));
+  act(async () => { await api('POST', '/images', body); e.target.reset(); });
+});
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
